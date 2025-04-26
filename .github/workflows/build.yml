@@ -1,4 +1,4 @@
-name: Build and Deploy PDF Service
+name: Build PDF Service
 
 on:
   push:
@@ -8,10 +8,10 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 20
 
     steps:
-    - name: Checkout repository
+    - name: Checkout code
       uses: actions/checkout@v4
 
     - name: Set up Python 3.10
@@ -25,27 +25,18 @@ jobs:
         pip install -r requirements.txt
         pip install pyinstaller==6.0.0
 
-    - name: Create necessary folders
+    - name: Create necessary directories
       run: |
-        New-Item -ItemType Directory -Force -Path pdf_files, bluetooth_tools
-
-    - name: Download Bluetooth tools
-      run: |
-        Invoke-WebRequest "https://cdn.example.com/bluetooth_tools/btpair.exe" -OutFile bluetooth_tools/btpair.exe
-        Invoke-WebRequest "https://cdn.example.com/bluetooth_tools/btcom.exe" -OutFile bluetooth_tools/btcom.exe
+        New-Item -ItemType Directory -Force -Path pdf_files
 
     - name: Build executable
       run: |
         pyinstaller --noconfirm --onefile --windowed --name PDFService `
           --add-data "pdf_files;pdf_files" `
-          --add-data "bluetooth_tools;bluetooth_tools" `
           main.py
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: PDFService-Package
-        path: |
-          dist/PDFService.exe
-          pdf_files/
-          bluetooth_tools/
+        path: dist/PDFService.exe
