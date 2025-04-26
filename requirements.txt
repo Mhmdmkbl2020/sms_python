@@ -3,4 +3,4 @@ watchdog==3.0.0
 selenium==4.9.1
 pyserial==3.5
 webdriver-manager==3.8.6
-pywin32==306
+bleak==0.21.1
