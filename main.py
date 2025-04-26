@@ -16,7 +16,7 @@ from selenium.webdriver.firefox.service import Service
 from selenium.webdriver.firefox.options import Options
 from webdriver_manager.firefox import GeckoDriverManager
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 from bleak import BleakClient, discover
 
 # ---------------------- الإعدادات العامة ----------------------
@@ -58,29 +58,38 @@ class ConfigManager:
 class BluetoothManager:
     def __init__(self):
         self.config = ConfigManager.load_config()
-        self.loop = asyncio.new_event_loop()
-        self.connected = False
         
     async def discover_devices(self):
-        """اكتشاف أجهزة البلوتوث المتاحة"""
         try:
             devices = await discover()
             return [{'name': d.name, 'address': d.address} for d in devices]
         except Exception as e:
-            logging.error(f"Bluetooth error: {str(e)}")
+            logging.error(f"Bluetooth discovery error: {str(e)}")
             return []
         
     async def connect_device(self, address):
-        """الاتصال بجهاز بلوتوث"""
         try:
             async with BleakClient(address) as client:
-                self.connected = await client.is_connected()
-                if self.connected:
+                if await client.is_connected():
                     self.config['bluetooth_device'] = address
                     ConfigManager.save_config(self.config)
                     return True
         except Exception as e:
             logging.error(f"Connection failed: {str(e)}")
+            return False
+
+    async def send_file(self, file_path):
+        if not self.config['bluetooth_device']:
+            return False
+        try:
+            async with BleakClient(self.config['bluetooth_device']) as client:
+                if await client.is_connected():
+                    with open(file_path, 'rb') as f:
+                        data = f.read()
+                        await client.write_gatt_char("0000ffe1-0000-1000-8000-00805f9b34fb", data)
+                    return True
+        except Exception as e:
+            logging.error(f"Bluetooth send failed: {str(e)}")
             return False
 
 # ---------------------- الخدمة الرئيسية ----------------------
@@ -107,14 +116,14 @@ class ServiceManager:
     def start_monitoring(self):
         self.observer.schedule(PDFHandler(self), MONITOR_DIR, recursive=False)
         self.observer.start()
-        logging.info("Service started")
+        logging.info("Service monitoring started")
     
     def stop_monitoring(self):
         self.observer.stop()
         self.observer.join()
         if self.driver:
             self.driver.quit()
-        logging.info("Service stopped")
+        logging.info("Service monitoring stopped")
 
 # ---------------------- معالجة الملفات ----------------------
 class PDFHandler(FileSystemEventHandler):
@@ -143,16 +152,20 @@ class PDFHandler(FileSystemEventHandler):
             
             full_number = f"966{number}"
             
+            # إرسال SMS
             if self.manager.config['sms']:
                 self.send_sms(full_number, message)
             
+            # إرسال WhatsApp
             if self.manager.config['whatsapp'] and self.manager.driver:
                 self.send_whatsapp(path, full_number, message)
             
-            if self.manager.bluetooth.config['bluetooth_device']:
-                asyncio.run(self.send_bluetooth(path))
+            # إرسال Bluetooth
+            if self.manager.config['bluetooth_device']:
+                asyncio.run(self.manager.bluetooth.send_file(path))
             
             os.remove(path)
+            logging.info(f"Processed file: {os.path.basename(path)}")
             
         except Exception as e:
             logging.error(f"Processing error: {str(e)}")
@@ -164,18 +177,7 @@ class PDFHandler(FileSystemEventHandler):
                 modem.write(b'AT+CMGF=1\r')
                 modem.write(f'AT+CMGS="{number}"\r'.encode() + message.encode() + b'\x1A')
         except Exception as e:
-            logging.error(f"SMS failed: {str(e)}")
-
-    async def send_bluetooth(self, file_path):
-        """إرسال الملف عبر البلوتوث"""
-        try:
-            async with BleakClient(self.manager.bluetooth.config['bluetooth_device']) as client:
-                if await client.is_connected():
-                    with open(file_path, 'rb') as f:
-                        data = f.read()
-                        await client.write_gatt_char("0000ffe1-0000-1000-8000-00805f9b34fb", data)
-        except Exception as e:
-            logging.error(f"Bluetooth send failed: {str(e)}")
+            logging.error(f"SMS sending failed: {str(e)}")
 
     def send_whatsapp(self, path, number, message):
         try:
@@ -188,7 +190,7 @@ class PDFHandler(FileSystemEventHandler):
             time.sleep(2)
             self.manager.driver.find_element(By.XPATH, '//div[@aria-label="إرسال"]').click()
         except Exception as e:
-            logging.error(f"WhatsApp failed: {str(e)}")
+            logging.error(f"WhatsApp sending failed: {str(e)}")
             self.manager.init_browser()
 
 # ---------------------- واجهة التحكم ----------------------
@@ -203,34 +205,34 @@ class ControlPanel(tk.Tk):
         self.update_status()
     
     def create_widgets(self):
-        # إطار حالة الأجهزة
-        status_frame = ttk.LabelFrame(self, text="Device Status")
+        # إطار الحالة
+        status_frame = ttk.LabelFrame(self, text="حالة النظام")
         status_frame.pack(pady=10, fill='x', padx=10)
         
-        # GSM
+        # حالة المودم
         ttk.Label(status_frame, text="مودم GSM:").grid(row=0, column=0, padx=5)
         self.gsm_status = ttk.Label(status_frame, text="غير متصل", foreground="red")
         self.gsm_status.grid(row=0, column=1)
         
-        # Bluetooth
+        # حالة البلوتوث
         ttk.Label(status_frame, text="بلوتوث:").grid(row=1, column=0, padx=5)
         self.bt_status = ttk.Label(status_frame, text="غير متصل", foreground="red")
         self.bt_status.grid(row=1, column=1)
         
-        # إعدادات المنفذ
+        # تغيير المنفذ
         ttk.Button(
             status_frame,
             text="تغيير المنفذ",
-            command=self.change_port
+            command=self.change_com_port
         ).grid(row=0, column=2, padx=10)
         
-        # التحكم بالخدمات
-        control_frame = ttk.LabelFrame(self, text="الخدمات")
-        control_frame.pack(pady=10, fill='x', padx=10)
+        # إعدادات الخدمات
+        service_frame = ttk.LabelFrame(self, text="الخدمات المفعّلة")
+        service_frame.pack(pady=10, fill='x', padx=10)
         
         self.whatsapp_var = tk.BooleanVar(value=self.manager.config['whatsapp'])
         ttk.Checkbutton(
-            control_frame,
+            service_frame,
             text="خدمة الواتساب",
             variable=self.whatsapp_var,
             command=lambda: self.toggle_service('whatsapp')
@@ -238,20 +240,20 @@ class ControlPanel(tk.Tk):
         
         self.sms_var = tk.BooleanVar(value=self.manager.config['sms'])
         ttk.Checkbutton(
-            control_frame,
+            service_frame,
             text="خدمة الرسائل النصية",
             variable=self.sms_var,
             command=lambda: self.toggle_service('sms')
         ).pack(pady=5, anchor='w')
         
-        # Bluetooth Pairing
+        # إدارة البلوتوث
         ttk.Button(
-            control_frame,
-            text="إدارة البلوتوث",
-            command=self.show_bluetooth_dialog
+            self,
+            text="إدارة أجهزة البلوتوث",
+            command=self.manage_bluetooth
         ).pack(pady=10)
         
-        # إغلاق
+        # خروج
         ttk.Button(
             self,
             text="خروج",
@@ -265,20 +267,48 @@ class ControlPanel(tk.Tk):
         if service_name == 'whatsapp' and new_state:
             self.manager.init_browser()
     
-    def change_port(self):
+    def change_com_port(self):
         new_port = simpledialog.askstring("تغيير المنفذ", "أدخل المنفذ الجديد (مثال: COM4):")
         if new_port:
             self.manager.config['com_port'] = new_port
             ConfigManager.save_config(self.manager.config)
     
-    async def show_bluetooth_dialog_async(self):
+    async def show_bluetooth_devices(self):
         devices = await self.manager.bluetooth.discover_devices()
         if devices:
-            choice = simpledialog.askstring("اختيار جهاز", "أدخل عنوان الجهاز:")
-            if choice:
-                if await self.manager.bluetooth.connect_device(choice):
-                    messagebox.showinfo("Success", "تم الإقران بنجاح!")
+            device_list = "\n".join([f"{d['name']} ({d['address']})" for d in devices])
+            selected_address = simpledialog.askstring(
+                "إدارة البلوتوث",
+                f"الأجهزة المتاحة:\n{device_list}\n\nأدخل عنوان الجهاز:"
+            )
+            if selected_address:
+                if await self.manager.bluetooth.connect_device(selected_address):
+                    messagebox.showinfo("نجاح", "تم الإقران بنجاح!")
+                else:
+                    messagebox.showerror("خطأ", "فشل عملية الإقران")
     
-    def show_bluetooth_dialog(self):
-        Thread(target=lambda: asyncio.run(self.show_bluetooth_dialog_async())).start()
+    def manage_bluetooth(self):
+        Thread(target=lambda: asyncio.run(self.show_bluetooth_devices())).start()
     
+    def update_status(self):
+        # تحديث حالة المودم
+        try:
+            with serial.Serial(self.manager.config['com_port'], timeout=1):
+                self.gsm_status.config(text="متصل", foreground="green")
+        except:
+            self.gsm_status.config(text="غير متصل", foreground="red")
+        
+        # تحديث حالة البلوتوث
+        if self.manager.config['bluetooth_device']:
+            self.bt_status.config(text="متصل", foreground="green")
+        else:
+            self.bt_status.config(text="غير متصل", foreground="red")
+        
+        self.after(1000, self.update_status)
+
+if __name__ == "__main__":
+    service = ServiceManager()
+    service.start_monitoring()
+    app = ControlPanel(service)
+    app.mainloop()
+    service.stop_monitoring()
