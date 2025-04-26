@@ -4,3 +4,4 @@ selenium==4.9.1
 pyserial==3.5
 webdriver-manager==3.8.6
 bleak==0.21.1
+pywin32==306
