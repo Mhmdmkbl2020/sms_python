@@ -92,6 +92,8 @@ class BluetoothManager:
             logging.error(f"Bluetooth send failed: {str(e)}")
             return False
 
+# ... [بقية الأكواد السابقة] ...
+
 # ---------------------- الخدمة الرئيسية ----------------------
 class ServiceManager:
     def __init__(self):
@@ -99,31 +101,97 @@ class ServiceManager:
         self.bluetooth = BluetoothManager()
         self.observer = Observer()
         self.driver = None
+        self.is_headless = False  # إضافة حالة الواجهة
         self.init_browser()
-        
+
     def init_browser(self):
         if self.config['whatsapp']:
             try:
                 options = Options()
-                options.add_argument("--headless")
+                # إضافة بيانات المستخدم لحفظ الجلسة
+                profile_path = os.path.join(BASE_DIR, 'firefox_profile')
+                options.add_argument(f"--user-data-dir={profile_path}")
+                
+                if self.is_headless:
+                    options.add_argument("--headless")
+                
                 service = Service(GeckoDriverManager().cache_manager.install())
                 self.driver = webdriver.Firefox(service=service, options=options)
                 self.driver.get("https://web.whatsapp.com")
-                time.sleep(15)
+                
+                # انتظار ذكي حتى 60 ثانية لتفعيل الجلسة
+                WebDriverWait(self.driver, 60).until(
+                    EC.presence_of_element_located((By.XPATH, '//div[@role="textbox"]'))
+                )
+                
             except Exception as e:
                 logging.error(f"Browser init failed: {str(e)}")
-    
-    def start_monitoring(self):
-        self.observer.schedule(PDFHandler(self), MONITOR_DIR, recursive=False)
-        self.observer.start()
-        logging.info("Service monitoring started")
-    
-    def stop_monitoring(self):
-        self.observer.stop()
-        self.observer.join()
-        if self.driver:
-            self.driver.quit()
-        logging.info("Service monitoring stopped")
+
+    def check_whatsapp_login(self):
+        """تحقق من حالة اتصال الواتساب"""
+        try:
+            # التحقق من وجود حقل البحث (يدل على اتصال ناجح)
+            self.driver.find_element(By.XPATH, '//div[@role="textbox"]')
+            return True
+        except:
+            return False
+
+    def send_whatsapp(self, path, number, message):
+        if not self.driver:
+            return
+        
+        try:
+            # إعادة التهيئة إذا كانت الجلسة منتهية
+            if not self.check_whatsapp_login():
+                self.driver.quit()
+                self.init_browser()
+            
+            # ... [يبقى الكود الأصلي للإرسال] ...
+            
+        except Exception as e:
+            logging.error(f"WhatsApp sending failed: {str(e)}")
+            self.init_browser()
+
+# ... [في قسم الواجهة الرسومية] ...
+
+class ControlPanel(tk.Tk):
+    def __init__(self, manager):
+        super().__init__()
+        self.manager = manager
+        self.protocol("WM_DELETE_WINDOW", self.hide_window)  # تغيير سلوك الإغلاق
+        # ... [الكود الأصلي] ...
+
+    def hide_window(self):
+        """إخفاء النافذة بدلاً من الإغلاق"""
+        self.withdraw()
+
+    def destroy(self):
+        """إيقاف المراقبة عند الإغلاق النهائي"""
+        self.manager.stop_monitoring()
+        super().destroy()
+
+# ... [في قسم التشغيل الرئيسي] ...
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--headless', action='store_true', help='التشغيل في الخلفية')
+    args = parser.parse_args()
+
+    service = ServiceManager()
+    service.is_headless = args.headless  # تمرير حالة الواجهة
+    service.start_monitoring()
+
+    if not args.headless:
+        app = ControlPanel(service)
+        app.mainloop()
+    else:
+        # تشغيل في الخلفية
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            service.stop_monitoring()
 
 # ---------------------- معالجة الملفات ----------------------
 class PDFHandler(FileSystemEventHandler):
