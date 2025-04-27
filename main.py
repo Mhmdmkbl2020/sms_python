@@ -14,6 +14,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.firefox.service import Service
 from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.firefox import GeckoDriverManager
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
@@ -48,7 +50,7 @@ class ConfigManager:
                 'com_port': 'COM3',
                 'bluetooth_device': None
             }
-
+            
     @staticmethod
     def save_config(config):
         with open(CONFIG_FILE, 'w') as f:
@@ -66,7 +68,7 @@ class BluetoothManager:
         except Exception as e:
             logging.error(f"Bluetooth discovery error: {str(e)}")
             return []
-        
+            
     async def connect_device(self, address):
         try:
             async with BleakClient(address) as client:
@@ -77,7 +79,7 @@ class BluetoothManager:
         except Exception as e:
             logging.error(f"Connection failed: {str(e)}")
             return False
-
+            
     async def send_file(self, file_path):
         if not self.config['bluetooth_device']:
             return False
@@ -92,34 +94,31 @@ class BluetoothManager:
             logging.error(f"Bluetooth send failed: {str(e)}")
             return False
 
-# ... [بقية الأكواد السابقة] ...
-
 # ---------------------- الخدمة الرئيسية ----------------------
 class ServiceManager:
-    def __init__(self):
+    def __init__(self, headless=False):
         self.config = ConfigManager.load_config()
         self.bluetooth = BluetoothManager()
         self.observer = Observer()
         self.driver = None
-        self.is_headless = False  # إضافة حالة الواجهة
+        self.headless = headless
         self.init_browser()
 
     def init_browser(self):
         if self.config['whatsapp']:
             try:
                 options = Options()
-                # إضافة بيانات المستخدم لحفظ الجلسة
                 profile_path = os.path.join(BASE_DIR, 'firefox_profile')
                 options.add_argument(f"--user-data-dir={profile_path}")
                 
-                if self.is_headless:
+                if self.headless:
                     options.add_argument("--headless")
-                
-                service = Service(GeckoDriverManager().cache_manager.install())
+                    
+                service = Service(GeckoDriverManager().install())
                 self.driver = webdriver.Firefox(service=service, options=options)
                 self.driver.get("https://web.whatsapp.com")
                 
-                # انتظار ذكي حتى 60 ثانية لتفعيل الجلسة
+                # انتظار حتى 60 ثانية لتحميل الصفحة
                 WebDriverWait(self.driver, 60).until(
                     EC.presence_of_element_located((By.XPATH, '//div[@role="textbox"]'))
                 )
@@ -130,7 +129,6 @@ class ServiceManager:
     def check_whatsapp_login(self):
         """تحقق من حالة اتصال الواتساب"""
         try:
-            # التحقق من وجود حقل البحث (يدل على اتصال ناجح)
             self.driver.find_element(By.XPATH, '//div[@role="textbox"]')
             return True
         except:
@@ -139,99 +137,84 @@ class ServiceManager:
     def send_whatsapp(self, path, number, message):
         if not self.driver:
             return
-        
+            
         try:
             # إعادة التهيئة إذا كانت الجلسة منتهية
             if not self.check_whatsapp_login():
                 self.driver.quit()
                 self.init_browser()
+                
+            # إرسال الرسالة
+            search_box = self.driver.find_element(By.XPATH, '//div[@role="textbox"]')
+            search_box.send_keys(number + Keys.ENTER)
+            time.sleep(2)
             
-            # ... [يبقى الكود الأصلي للإرسال] ...
+            message_box = self.driver.find_element(By.XPATH, '//div[@role="textbox"][@contenteditable="true"]')
+            message_box.send_keys(message + Keys.ENTER)
+            
+            # إرفاق الملف
+            self.driver.find_element(By.XPATH, '//div[@title="إرفاق"]').click()
+            file_input = self.driver.find_element(By.XPATH, '//input[@type="file"]')
+            file_input.send_keys(os.path.abspath(path))
+            time.sleep(2)
+            self.driver.find_element(By.XPATH, '//div[@aria-label="إرسال"]').click()
             
         except Exception as e:
             logging.error(f"WhatsApp sending failed: {str(e)}")
             self.init_browser()
 
-# ... [في قسم الواجهة الرسومية] ...
+    def start_monitoring(self):
+        event_handler = PDFHandler(self)
+        self.observer.schedule(event_handler, MONITOR_DIR, recursive=False)
+        self.observer.start()
+        logging.info("Monitoring started")
 
-class ControlPanel(tk.Tk):
-    def __init__(self, manager):
-        super().__init__()
-        self.manager = manager
-        self.protocol("WM_DELETE_WINDOW", self.hide_window)  # تغيير سلوك الإغلاق
-        # ... [الكود الأصلي] ...
-
-    def hide_window(self):
-        """إخفاء النافذة بدلاً من الإغلاق"""
-        self.withdraw()
-
-    def destroy(self):
-        """إيقاف المراقبة عند الإغلاق النهائي"""
-        self.manager.stop_monitoring()
-        super().destroy()
-
-# ... [في قسم التشغيل الرئيسي] ...
-
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--headless', action='store_true', help='التشغيل في الخلفية')
-    args = parser.parse_args()
-
-    service = ServiceManager()
-    service.is_headless = args.headless  # تمرير حالة الواجهة
-    service.start_monitoring()
-
-    if not args.headless:
-        app = ControlPanel(service)
-        app.mainloop()
-    else:
-        # تشغيل في الخلفية
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            service.stop_monitoring()
+    def stop_monitoring(self):
+        self.observer.stop()
+        self.observer.join()
+        if self.driver:
+            self.driver.quit()
+        logging.info("Monitoring stopped")
 
 # ---------------------- معالجة الملفات ----------------------
 class PDFHandler(FileSystemEventHandler):
     def __init__(self, manager):
         self.manager = manager
-    
+
     def on_created(self, event):
         if not event.is_directory and event.src_path.endswith('.pdf'):
             Thread(target=self.process_pdf, args=(event.src_path,)).start()
-    
+
     def process_pdf(self, path):
         try:
             with open(path, 'rb') as f:
                 reader = PdfReader(f)
                 text = '\n'.join([page.extract_text() or '' for page in reader.pages])
-            
+                
             lines = [line.strip() for line in text.split('\n') if line.strip()]
             if len(lines) < 2:
                 raise ValueError("Invalid PDF format")
-            
+                
             number = lines[0].lstrip('+').replace(' ', '')
             message = lines[1]
             
             if not (number.isdigit() and len(number) == 9):
                 raise ValueError("Invalid phone number")
-            
+                
             full_number = f"966{number}"
             
             # إرسال SMS
             if self.manager.config['sms']:
                 self.send_sms(full_number, message)
-            
+                
             # إرسال WhatsApp
             if self.manager.config['whatsapp'] and self.manager.driver:
                 self.send_whatsapp(path, full_number, message)
-            
+                
             # إرسال Bluetooth
             if self.manager.config['bluetooth_device']:
                 asyncio.run(self.manager.bluetooth.send_file(path))
-            
+                
             os.remove(path)
             logging.info(f"Processed file: {os.path.basename(path)}")
             
@@ -243,23 +226,15 @@ class PDFHandler(FileSystemEventHandler):
         try:
             with serial.Serial(self.manager.config['com_port'], 9600, timeout=1) as modem:
                 modem.write(b'AT+CMGF=1\r')
-                modem.write(f'AT+CMGS="{number}"\r'.encode() + message.encode() + b'\x1A')
+                time.sleep(1)
+                modem.write(f'AT+CMGS="{number}"\r'.encode())
+                time.sleep(1)
+                modem.write(message.encode() + b'\x1A')
         except Exception as e:
             logging.error(f"SMS sending failed: {str(e)}")
 
     def send_whatsapp(self, path, number, message):
-        try:
-            self.manager.driver.find_element(By.XPATH, '//div[@role="textbox"]').send_keys(number + Keys.ENTER)
-            time.sleep(2)
-            self.manager.driver.find_element(By.XPATH, '//div[@role="textbox"]').send_keys(message + Keys.ENTER)
-            self.manager.driver.find_element(By.XPATH, '//div[@title="إرفاق"]').click()
-            file_input = self.manager.driver.find_element(By.XPATH, '//input[@type="file"]')
-            file_input.send_keys(os.path.abspath(path))
-            time.sleep(2)
-            self.manager.driver.find_element(By.XPATH, '//div[@aria-label="إرسال"]').click()
-        except Exception as e:
-            logging.error(f"WhatsApp sending failed: {str(e)}")
-            self.manager.init_browser()
+        self.manager.send_whatsapp(path, number, message)
 
 # ---------------------- واجهة التحكم ----------------------
 class ControlPanel(tk.Tk):
@@ -268,10 +243,10 @@ class ControlPanel(tk.Tk):
         self.manager = manager
         self.title("PDF Service Controller")
         self.geometry("500x400")
-        
+        self.protocol("WM_DELETE_WINDOW", self.shutdown)
         self.create_widgets()
         self.update_status()
-    
+
     def create_widgets(self):
         # إطار الحالة
         status_frame = ttk.LabelFrame(self, text="حالة النظام")
@@ -321,43 +296,44 @@ class ControlPanel(tk.Tk):
             command=self.manage_bluetooth
         ).pack(pady=10)
         
-        # خروج
+        # زر الإغلاق النهائي
         ttk.Button(
             self,
-            text="خروج",
-            command=self.destroy
+            text="إيقاف الخدمة",
+            command=self.shutdown
         ).pack(pady=10)
-    
+
     def toggle_service(self, service_name):
         new_state = getattr(self, f"{service_name}_var").get()
         self.manager.config[service_name] = new_state
         ConfigManager.save_config(self.manager.config)
+        
         if service_name == 'whatsapp' and new_state:
             self.manager.init_browser()
-    
+
     def change_com_port(self):
         new_port = simpledialog.askstring("تغيير المنفذ", "أدخل المنفذ الجديد (مثال: COM4):")
         if new_port:
             self.manager.config['com_port'] = new_port
             ConfigManager.save_config(self.manager.config)
-    
+
     async def show_bluetooth_devices(self):
         devices = await self.manager.bluetooth.discover_devices()
         if devices:
             device_list = "\n".join([f"{d['name']} ({d['address']})" for d in devices])
             selected_address = simpledialog.askstring(
                 "إدارة البلوتوث",
-                f"الأجهزة المتاحة:\n{device_list}\n\nأدخل عنوان الجهاز:"
+                f"الأجهزة المتاحة:\n{device_list}\nأدخل عنوان الجهاز:"
             )
             if selected_address:
                 if await self.manager.bluetooth.connect_device(selected_address):
                     messagebox.showinfo("نجاح", "تم الإقران بنجاح!")
                 else:
                     messagebox.showerror("خطأ", "فشل عملية الإقران")
-    
+
     def manage_bluetooth(self):
         Thread(target=lambda: asyncio.run(self.show_bluetooth_devices())).start()
-    
+
     def update_status(self):
         # تحديث حالة المودم
         try:
@@ -365,18 +341,35 @@ class ControlPanel(tk.Tk):
                 self.gsm_status.config(text="متصل", foreground="green")
         except:
             self.gsm_status.config(text="غير متصل", foreground="red")
-        
+            
         # تحديث حالة البلوتوث
         if self.manager.config['bluetooth_device']:
             self.bt_status.config(text="متصل", foreground="green")
         else:
             self.bt_status.config(text="غير متصل", foreground="red")
-        
+            
         self.after(1000, self.update_status)
 
+    def shutdown(self):
+        self.manager.stop_monitoring()
+        self.destroy()
+
+# ---------------------- التشغيل الرئيسي ----------------------
 if __name__ == "__main__":
-    service = ServiceManager()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--headless', action='store_true', help='التشغيل في الخلفية')
+    args = parser.parse_args()
+
+    service = ServiceManager(headless=args.headless)
     service.start_monitoring()
-    app = ControlPanel(service)
-    app.mainloop()
-    service.stop_monitoring()
+
+    if not args.headless:
+        app = ControlPanel(service)
+        app.mainloop()
+    else:
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            service.stop_monitoring()
